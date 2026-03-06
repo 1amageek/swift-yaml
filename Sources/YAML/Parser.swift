@@ -162,34 +162,21 @@ struct Parser {
         try consumeExpected(.flowSequenceStart)
         var nodes: [Node] = []
 
-        if case .flowSequenceEnd = try peekToken() {
-            try consumeToken()
-            return Node.Sequence(nodes)
-        }
-
-        nodes.append(try parseFlowNode())
-
-        while true {
+        loop: while true {
             let tok = try peekToken()
             switch tok {
+            case .flowSequenceEnd:
+                try consumeToken()
+                break loop
             case .flowEntry:
                 try consumeToken()
-                if case .flowSequenceEnd = try peekToken() {
-                    // Trailing comma
-                    break
-                }
-                nodes.append(try parseFlowNode())
-            case .flowSequenceEnd:
-                break
+            case .streamEnd:
+                throw YAMLError.parser(message: "unterminated flow sequence", mark: scanner.mark)
             default:
-                break
-            }
-            if case .flowSequenceEnd = try peekToken() {
-                break
+                nodes.append(try parseFlowNode())
             }
         }
 
-        try consumeExpected(.flowSequenceEnd)
         return Node.Sequence(nodes)
     }
 
@@ -199,25 +186,21 @@ struct Parser {
         try consumeExpected(.flowMappingStart)
         var pairs: [(Node, Node)] = []
 
-        if case .flowMappingEnd = try peekToken() {
-            try consumeToken()
-            return Node.Mapping(pairs)
-        }
-
-        pairs.append(try parseFlowMappingEntry())
-
-        while true {
+        loop: while true {
             let tok = try peekToken()
-            if case .flowEntry = tok {
+            switch tok {
+            case .flowMappingEnd:
                 try consumeToken()
-                if case .flowMappingEnd = try peekToken() { break }
+                break loop
+            case .flowEntry:
+                try consumeToken()
+            case .streamEnd:
+                throw YAMLError.parser(message: "unterminated flow mapping", mark: scanner.mark)
+            default:
                 pairs.append(try parseFlowMappingEntry())
-            } else {
-                break
             }
         }
 
-        try consumeExpected(.flowMappingEnd)
         return Node.Mapping(pairs)
     }
 

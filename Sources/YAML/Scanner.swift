@@ -2,8 +2,12 @@
 ///
 /// Tracks indentation levels to emit implicit block structure tokens
 /// (`blockMappingStart`, `blockSequenceStart`, `blockEnd`).
+///
+/// Uses `[Unicode.Scalar]` instead of `[Character]` to correctly handle
+/// CRLF line endings — Swift's `Character` merges `\r\n` into a single
+/// extended grapheme cluster, breaking individual `\r` / `\n` comparisons.
 struct Scanner {
-    private let source: [Character]
+    private let source: [Unicode.Scalar]
     private var pos: Int
     private var line: Int
     private var column: Int
@@ -25,7 +29,7 @@ struct Scanner {
     private var streamEnded: Bool
 
     init(source: String) {
-        self.source = Array(source)
+        self.source = Array(source.unicodeScalars)
         self.pos = 0
         self.line = 1
         self.column = 1
@@ -58,6 +62,9 @@ struct Scanner {
         skipWhitespaceAndComments()
 
         if isAtEnd {
+            if flowLevel > 0 {
+                throw YAMLError.unexpectedEndOfInput(mark: mark)
+            }
             return emitStreamEnd()
         }
 
@@ -288,13 +295,13 @@ struct Scanner {
     private mutating func scanDoubleQuotedScalar() throws -> String {
         let startMark = mark
         advance() // skip opening "
-        var result: [Character] = []
+        var result: [Unicode.Scalar] = []
 
         while !isAtEnd {
             let ch = peek()!
             if ch == "\"" {
                 advance()
-                return String(result)
+                return makeString(result)
             }
             if ch == "\\" {
                 advance()
@@ -328,7 +335,7 @@ struct Scanner {
     private mutating func scanSingleQuotedScalar() throws -> String {
         let startMark = mark
         advance() // skip opening '
-        var result: [Character] = []
+        var result: [Unicode.Scalar] = []
 
         while !isAtEnd {
             let ch = peek()!
@@ -339,7 +346,7 @@ struct Scanner {
                     result.append("'")
                     advance()
                 } else {
-                    return String(result)
+                    return makeString(result)
                 }
             } else {
                 result.append(ch)
@@ -353,7 +360,7 @@ struct Scanner {
     // MARK: - Plain scalars
 
     private mutating func scanPlainScalar() throws -> String {
-        var result: [Character] = []
+        var result: [Unicode.Scalar] = []
         var previousWasSpace = false
 
         while !isAtEnd {
@@ -385,11 +392,11 @@ struct Scanner {
             result.removeLast()
         }
 
-        return String(result)
+        return makeString(result)
     }
 
     private mutating func scanFlowPlainScalar() throws -> String {
-        var result: [Character] = []
+        var result: [Unicode.Scalar] = []
         var previousWasSpace = false
 
         while !isAtEnd {
@@ -421,7 +428,7 @@ struct Scanner {
             result.removeLast()
         }
 
-        return String(result)
+        return makeString(result)
     }
 
     // MARK: - Whitespace and comments
@@ -487,12 +494,12 @@ struct Scanner {
 
     private var isAtEnd: Bool { pos >= source.count }
 
-    private func peek() -> Character? {
+    private func peek() -> Unicode.Scalar? {
         guard pos < source.count else { return nil }
         return source[pos]
     }
 
-    private func peekAt(offset: Int) -> Character? {
+    private func peekAt(offset: Int) -> Unicode.Scalar? {
         let idx = pos + offset
         guard idx < source.count else { return nil }
         return source[idx]
@@ -532,5 +539,13 @@ struct Scanner {
             line += 1
             column = 1
         }
+    }
+
+    // MARK: - String construction
+
+    private func makeString(_ scalars: [Unicode.Scalar]) -> String {
+        var s = ""
+        s.unicodeScalars.append(contentsOf: scalars)
+        return s
     }
 }
