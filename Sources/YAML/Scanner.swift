@@ -110,6 +110,14 @@ struct Scanner {
         if ch == "[" { return fetchFlowCollectionStart(.flowSequenceStart) }
         if ch == "{" { return fetchFlowCollectionStart(.flowMappingStart) }
 
+        // Block scalar indicators
+        if ch == "|" || ch == ">" {
+            if isBlockScalarHeader() {
+                let content = try scanBlockScalar(literal: ch == "|")
+                return .scalar(content, .plain)
+            }
+        }
+
         // Quoted scalar (may be a mapping key)
         if ch == "\"" || ch == "'" {
             return try fetchQuotedScalarOrKey(indent: indent)
@@ -429,6 +437,165 @@ struct Scanner {
         }
 
         return makeString(result)
+    }
+
+    // MARK: - Block scalars
+
+    /// Check whether `|` or `>` at the current position is a block scalar header.
+    /// Returns true when the remainder of the line contains only optional
+    /// chomping/indent indicators, whitespace, or a comment.
+    private func isBlockScalarHeader() -> Bool {
+        var offset = 1
+        // Optional indicators: chomping (- or +) and/or indent digit (1-9), in any order
+        for _ in 0..<2 {
+            guard let c = peekAt(offset: offset) else { return true }
+            if c == "-" || c == "+" || (c >= "1" && c <= "9") {
+                offset += 1
+            } else {
+                break
+            }
+        }
+        // Rest of line must be whitespace, comment, newline, or end
+        while let c = peekAt(offset: offset) {
+            if c == " " || c == "\t" { offset += 1; continue }
+            if c == "#" || c == "\n" || c == "\r" { return true }
+            return false
+        }
+        return true
+    }
+
+    /// Scan a block scalar (literal `|` or folded `>`).
+    ///
+    /// Reads the header line for optional chomping (`-`/`+`) and indent indicators,
+    /// then collects indented content lines until a line with less indentation
+    /// or end of input is reached.
+    private mutating func scanBlockScalar(literal: Bool) throws -> String {
+        advance() // skip | or >
+
+        // Parse header indicators
+        var chomping = 0 // 0 = clip, -1 = strip, 1 = keep
+        var explicitIndent: Int? = nil
+
+        while !isAtEnd, let ch = peek() {
+            if ch == "-" && chomping == 0 { chomping = -1; advance() }
+            else if ch == "+" && chomping == 0 { chomping = 1; advance() }
+            else if ch >= "1" && ch <= "9" && explicitIndent == nil {
+                explicitIndent = Int(String(ch))
+                advance()
+            }
+            else { break }
+        }
+
+        // Skip rest of header line (whitespace and optional comment)
+        while !isAtEnd, let ch = peek(), ch != "\n" && ch != "\r" {
+            advance()
+        }
+        if !isAtEnd { advanceNewline() }
+
+        // Resolve explicit indent to absolute column count
+        var contentIndent: Int? = nil
+        if let ei = explicitIndent {
+            let base = indents.last ?? 0
+            contentIndent = (base < 0 ? 0 : base) + ei
+        }
+
+        // Collect content lines
+        typealias ContentLine = (text: String, isEmpty: Bool)
+        var contentLines: [ContentLine] = []
+
+        while !isAtEnd {
+            let savedPos = pos
+            let savedLine = line
+            let savedColumn = column
+
+            // Count leading spaces
+            var lineIndent = 0
+            while !isAtEnd, let ch = peek(), ch == " " {
+                lineIndent += 1
+                advance()
+            }
+
+            // Empty line (only spaces before newline or end)
+            if isAtEnd || peek() == "\n" || peek() == "\r" {
+                if !isAtEnd { advanceNewline() }
+                contentLines.append(("", true))
+                continue
+            }
+
+            // Auto-detect content indentation from first non-empty line
+            if contentIndent == nil {
+                contentIndent = lineIndent
+            }
+
+            // Line is less indented than content — not part of the scalar
+            if lineIndent < contentIndent! {
+                pos = savedPos
+                line = savedLine
+                column = savedColumn
+                break
+            }
+
+            // Read line content, preserving extra indentation beyond contentIndent
+            var lineChars: [Unicode.Scalar] = []
+            for _ in 0..<(lineIndent - contentIndent!) {
+                lineChars.append(" ")
+            }
+            while !isAtEnd, let ch = peek(), ch != "\n" && ch != "\r" {
+                lineChars.append(ch)
+                advance()
+            }
+            if !isAtEnd { advanceNewline() }
+
+            contentLines.append((makeString(lineChars), false))
+        }
+
+        // Separate trailing empty lines for chomping
+        var trailingEmptyCount = 0
+        while let last = contentLines.last, last.isEmpty {
+            contentLines.removeLast()
+            trailingEmptyCount += 1
+        }
+
+        // Build result based on style
+        var result: String
+        if literal {
+            // Literal: preserve all newlines between content lines
+            result = contentLines.map(\.text).joined(separator: "\n")
+        } else {
+            // Folded: consecutive non-empty lines joined with space,
+            // empty lines preserved as paragraph breaks
+            var segments: [String] = []
+            var paragraph: [String] = []
+
+            for (text, isEmpty) in contentLines {
+                if isEmpty {
+                    if !paragraph.isEmpty {
+                        segments.append(paragraph.joined(separator: " "))
+                        paragraph = []
+                    }
+                    segments.append("")
+                } else {
+                    paragraph.append(text)
+                }
+            }
+            if !paragraph.isEmpty {
+                segments.append(paragraph.joined(separator: " "))
+            }
+
+            result = segments.joined(separator: "\n")
+        }
+
+        // Apply chomping
+        switch chomping {
+        case -1: break // strip: no trailing newline
+        case 1: // keep: preserve all trailing newlines
+            result += "\n"
+            result += String(repeating: "\n", count: trailingEmptyCount)
+        default: // clip: single trailing newline
+            if !result.isEmpty { result += "\n" }
+        }
+
+        return result
     }
 
     // MARK: - Whitespace and comments
