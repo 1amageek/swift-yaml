@@ -297,7 +297,7 @@ struct Scanner {
             if isBlockScalarHeader() {
                 documentStarted = true
                 let content = try scanBlockScalar(literal: ch == "|")
-                return .scalar(content, .plain)
+                return .scalar(content, ch == "|" ? .literal : .folded)
             }
         }
 

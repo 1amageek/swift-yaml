@@ -1,14 +1,17 @@
 extension Node {
     /// An ordered mapping of key-value pairs.
-    public struct Mapping: Sendable, Hashable {
+    public struct Mapping: Sendable {
         /// Internal storage preserving insertion order.
         private var pairs: [Pair]
         /// Source position where this mapping was found.
         public var mark: Mark?
+        /// The tag associated with this mapping (e.g., "tag:yaml.org,2002:map").
+        public var tag: String?
 
-        public init(_ pairs: [(Node, Node)] = [], mark: Mark? = nil) {
+        public init(_ pairs: [(Node, Node)] = [], mark: Mark? = nil, tag: String? = nil) {
             self.pairs = pairs.map { Pair(key: $0.0, value: $0.1) }
             self.mark = mark
+            self.tag = tag
         }
 
         /// Returns the first key-value pair, or `nil` if empty.
@@ -38,6 +41,20 @@ extension Node.Mapping {
     private struct Pair: Sendable, Hashable {
         let key: Node
         let value: Node
+    }
+}
+
+// MARK: - Equatable/Hashable (only pairs participate, mark and tag excluded)
+
+extension Node.Mapping: Equatable {
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.pairs == rhs.pairs
+    }
+}
+
+extension Node.Mapping: Hashable {
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(pairs)
     }
 }
 

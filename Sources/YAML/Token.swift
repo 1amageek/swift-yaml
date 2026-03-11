@@ -1,8 +1,10 @@
 /// Scalar quoting style.
-enum ScalarStyle: Sendable {
+public enum ScalarStyle: Sendable, Hashable {
     case plain
     case singleQuoted
     case doubleQuoted
+    case literal
+    case folded
 }
 
 /// Tokens produced by the YAML scanner.

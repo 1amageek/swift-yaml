@@ -3,6 +3,7 @@ public enum YAMLError: Error, Sendable, CustomStringConvertible {
     case scanner(message: String, mark: Mark)
     case parser(message: String, mark: Mark)
     case unexpectedEndOfInput(mark: Mark)
+    case depthLimitExceeded(mark: Mark)
 
     public var description: String {
         switch self {
@@ -12,6 +13,8 @@ public enum YAMLError: Error, Sendable, CustomStringConvertible {
             return "\(mark): parser error: \(message)"
         case .unexpectedEndOfInput(let mark):
             return "\(mark): unexpected end of input"
+        case .depthLimitExceeded(let mark):
+            return "\(mark): nesting depth limit exceeded"
         }
     }
 }

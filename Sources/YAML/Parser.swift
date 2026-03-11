@@ -5,10 +5,15 @@ struct Parser {
     private var peeked: Token?
     /// Anchor registry for alias resolution.
     private var anchors: [String: Node] = [:]
+    /// Maximum nesting depth to prevent stack overflow.
+    private let maxDepth: Int
+    /// Current nesting depth.
+    private var currentDepth: Int = 0
 
-    init(yaml: String) {
+    init(yaml: String, maxDepth: Int = 512) {
         self.scanner = Scanner(source: yaml)
         self.peeked = nil
+        self.maxDepth = maxDepth
     }
 
     // MARK: - Public
@@ -55,17 +60,60 @@ struct Parser {
         }
     }
 
+    /// Parse all documents in the YAML stream.
+    mutating func parseAll() throws -> [Node] {
+        let first = try nextToken()
+        guard case .streamStart = first else {
+            throw YAMLError.parser(message: "expected stream start", mark: scanner.mark)
+        }
+
+        var documents: [Node] = []
+
+        while !(try isStreamEnd()) {
+            // Skip document start/end markers
+            let tok = try peekToken()
+            if case .documentStart = tok {
+                try consumeToken()
+                continue
+            }
+            if case .documentEnd = tok {
+                try consumeToken()
+                continue
+            }
+
+            // Reset anchors for each document
+            anchors = [:]
+
+            let node = try parseNode(pushPropertiesToFirstKey: true)
+            documents.append(node)
+
+            // Consume trailing blockEnd tokens
+            consumeTrailing: while true {
+                switch try peekToken() {
+                case .blockEnd:
+                    try consumeToken()
+                default:
+                    break consumeTrailing
+                }
+            }
+        }
+
+        return documents
+    }
+
     // MARK: - Node parsing
 
     private mutating func parseNode(pushPropertiesToFirstKey: Bool = false) throws -> Node {
         var anchorName: String? = nil
+        var tagName: String? = nil
 
         // Consume node properties (tag, anchor) before the actual node
         propertyLoop: while true {
             let tok = try peekToken()
             switch tok {
-            case .tag:
-                try consumeToken() // consume tag, not stored on node
+            case .tag(let value):
+                try consumeToken()
+                tagName = value
             case .anchor(let name):
                 try consumeToken()
                 anchorName = name
@@ -81,7 +129,7 @@ struct Parser {
         }
 
         let tok = try peekToken()
-        let node: Node
+        var node: Node
 
         switch tok {
         case .blockMappingStart:
@@ -98,9 +146,9 @@ struct Parser {
             node = try .sequence(parseFlowSequence())
         case .flowMappingStart:
             node = try .mapping(parseFlowMapping())
-        case .scalar(let value, _):
+        case .scalar(let value, let style):
             try consumeToken()
-            node = .scalar(Node.Scalar(value))
+            node = .scalar(Node.Scalar(value, style: style))
         case .key:
             if pushPropertiesToFirstKey, anchorName != nil {
                 let savedAnchor = anchorName
@@ -122,6 +170,9 @@ struct Parser {
             throw YAMLError.parser(message: "unexpected token: \(tok)", mark: scanner.mark)
         }
 
+        // Attach tag to the constructed node
+        node = applyTag(tagName, to: node)
+
         if let name = anchorName {
             anchors[name] = node
         }
@@ -132,6 +183,9 @@ struct Parser {
     // MARK: - Block mapping
 
     private mutating func parseBlockMapping(firstKeyAnchor: String? = nil) throws -> Node.Mapping {
+        try incrementDepth()
+        defer { decrementDepth() }
+
         if case .blockMappingStart = try peekToken() {
             try consumeToken()
         }
@@ -142,11 +196,13 @@ struct Parser {
         loop: while true {
             // Consume entry-level node properties (tag/anchor before key)
             var entryAnchor: String? = nil
+            var entryTag: String? = nil
             entryPropertyLoop: while true {
                 let propTok = try peekToken()
                 switch propTok {
-                case .tag:
+                case .tag(let value):
                     try consumeToken()
+                    entryTag = value
                 case .anchor(let name):
                     try consumeToken()
                     entryAnchor = name
@@ -162,7 +218,7 @@ struct Parser {
                 try consumeToken()
 
                 // Parse key — might be empty if next is .value
-                let keyNode: Node
+                var keyNode: Node
                 let afterKey = try peekToken()
                 switch afterKey {
                 case .value:
@@ -181,6 +237,9 @@ struct Parser {
                 if let anchor = entryAnchor {
                     anchors[anchor] = keyNode
                 }
+                // Attach entry-level tag to key
+                keyNode = applyTag(entryTag, to: keyNode)
+
                 isFirstKey = false
 
                 // Expect value indicator
@@ -211,7 +270,12 @@ struct Parser {
                 default:
                     valueNode = try parseNode()
                 }
-                pairs.append((.scalar(Node.Scalar("")), valueNode))
+                var emptyKey: Node = .scalar(Node.Scalar(""))
+                emptyKey = applyTag(entryTag, to: emptyKey)
+                if let anchor = entryAnchor {
+                    anchors[anchor] = emptyKey
+                }
+                pairs.append((emptyKey, valueNode))
 
             case .blockEnd:
                 try consumeToken()
@@ -231,6 +295,9 @@ struct Parser {
     // MARK: - Block sequence
 
     private mutating func parseBlockSequence() throws -> Node.Sequence {
+        try incrementDepth()
+        defer { decrementDepth() }
+
         if case .blockSequenceStart = try peekToken() {
             try consumeToken()
         }
@@ -272,6 +339,9 @@ struct Parser {
     // MARK: - Flow sequence
 
     private mutating func parseFlowSequence() throws -> Node.Sequence {
+        try incrementDepth()
+        defer { decrementDepth() }
+
         try consumeExpected(.flowSequenceStart)
         var nodes: [Node] = []
 
@@ -296,6 +366,9 @@ struct Parser {
     // MARK: - Flow mapping
 
     private mutating func parseFlowMapping() throws -> Node.Mapping {
+        try incrementDepth()
+        defer { decrementDepth() }
+
         try consumeExpected(.flowMappingStart)
         var pairs: [(Node, Node)] = []
 
@@ -384,14 +457,16 @@ struct Parser {
 
     private mutating func parseFlowNode() throws -> Node {
         var anchorName: String? = nil
+        var tagName: String? = nil
         var hasProperties = false
 
         // Consume node properties
         propertyLoop: while true {
             let tok = try peekToken()
             switch tok {
-            case .tag:
+            case .tag(let value):
                 try consumeToken()
+                tagName = value
                 hasProperties = true
             case .anchor(let name):
                 try consumeToken()
@@ -409,16 +484,16 @@ struct Parser {
         }
 
         let tok = try peekToken()
-        let node: Node
+        var node: Node
 
         switch tok {
         case .flowSequenceStart:
             node = try .sequence(parseFlowSequence())
         case .flowMappingStart:
             node = try .mapping(parseFlowMapping())
-        case .scalar(let value, _):
+        case .scalar(let value, let style):
             try consumeToken()
-            node = .scalar(Node.Scalar(value))
+            node = .scalar(Node.Scalar(value, style: style))
         case .key:
             // Implicit mapping inside flow sequence (single-pair)
             node = try .mapping(parseFlowImplicitMapping())
@@ -446,6 +521,9 @@ struct Parser {
             throw YAMLError.parser(message: "unexpected token in flow: \(tok)", mark: scanner.mark)
         }
 
+        // Attach tag to the constructed node
+        node = applyTag(tagName, to: node)
+
         if let name = anchorName {
             anchors[name] = node
         }
@@ -455,6 +533,9 @@ struct Parser {
 
     /// Parse an implicit single-pair mapping inside a flow sequence.
     private mutating func parseFlowImplicitMapping() throws -> Node.Mapping {
+        try incrementDepth()
+        defer { decrementDepth() }
+
         // key token already peeked
         try consumeToken() // consume .key
 
@@ -481,6 +562,36 @@ struct Parser {
         }
 
         return Node.Mapping([(keyNode, valueNode)])
+    }
+
+    // MARK: - Depth limiting
+
+    private mutating func incrementDepth() throws {
+        currentDepth += 1
+        if currentDepth > maxDepth {
+            throw YAMLError.depthLimitExceeded(mark: scanner.mark)
+        }
+    }
+
+    private mutating func decrementDepth() {
+        currentDepth -= 1
+    }
+
+    // MARK: - Tag helper
+
+    private func applyTag(_ tag: String?, to node: Node) -> Node {
+        guard let tag = tag else { return node }
+        switch node {
+        case .scalar(var s):
+            s.tag = tag
+            return .scalar(s)
+        case .mapping(var m):
+            m.tag = tag
+            return .mapping(m)
+        case .sequence(var s):
+            s.tag = tag
+            return .sequence(s)
+        }
     }
 
     // MARK: - Token helpers

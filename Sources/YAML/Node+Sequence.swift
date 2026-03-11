@@ -1,14 +1,17 @@
 extension Node {
     /// An ordered sequence of YAML nodes.
-    public struct Sequence: Sendable, Hashable {
+    public struct Sequence: Sendable {
         /// Internal storage.
         private var nodes: [Node]
         /// Source position where this sequence was found.
         public var mark: Mark?
+        /// The tag associated with this sequence (e.g., "tag:yaml.org,2002:seq").
+        public var tag: String?
 
-        public init(_ nodes: [Node] = [], mark: Mark? = nil) {
+        public init(_ nodes: [Node] = [], mark: Mark? = nil, tag: String? = nil) {
             self.nodes = nodes
             self.mark = mark
+            self.tag = tag
         }
     }
 }
@@ -18,6 +21,20 @@ extension Node {
     public var sequence: Sequence? {
         if case .sequence(let s) = self { return s }
         return nil
+    }
+}
+
+// MARK: - Equatable/Hashable (only nodes participate, mark and tag excluded)
+
+extension Node.Sequence: Equatable {
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.nodes == rhs.nodes
+    }
+}
+
+extension Node.Sequence: Hashable {
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(nodes)
     }
 }
 
