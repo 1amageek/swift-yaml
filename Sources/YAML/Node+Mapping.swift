@@ -24,6 +24,14 @@ extension Node {
     }
 }
 
+extension Node {
+    /// Returns the mapping if this node is `.mapping`, otherwise `nil`.
+    public var mapping: Mapping? {
+        if case .mapping(let m) = self { return m }
+        return nil
+    }
+}
+
 // MARK: - Hashable internal pair
 
 extension Node.Mapping {

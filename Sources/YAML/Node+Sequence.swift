@@ -13,6 +13,14 @@ extension Node {
     }
 }
 
+extension Node {
+    /// Returns the sequence if this node is `.sequence`, otherwise `nil`.
+    public var sequence: Sequence? {
+        if case .sequence(let s) = self { return s }
+        return nil
+    }
+}
+
 // MARK: - RandomAccessCollection
 
 extension Node.Sequence: RandomAccessCollection {

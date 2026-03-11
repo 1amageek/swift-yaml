@@ -42,4 +42,6 @@ extension Tag {
     @Tag static var indentation: Self
     /// Empty node handling
     @Tag static var empty: Self
+    /// Error edge cases: scanner and parser error paths
+    @Tag static var edgeCases: Self
 }
