@@ -1,7 +1,7 @@
 import Testing
 @testable import YAML
 
-@Suite("Error Tests")
+@Suite("Error Tests", .tags(.regression))
 struct ErrorTests {
 
     @Test("Unterminated double-quoted string")

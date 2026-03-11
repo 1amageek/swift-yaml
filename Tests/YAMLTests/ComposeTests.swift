@@ -1,7 +1,7 @@
 import Testing
 @testable import YAML
 
-@Suite("Compose Tests")
+@Suite("Compose Tests", .tags(.regression))
 struct ComposeTests {
 
     @Test("Empty input returns nil")

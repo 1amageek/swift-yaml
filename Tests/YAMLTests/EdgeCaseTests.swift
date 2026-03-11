@@ -1,7 +1,7 @@
 import Testing
 @testable import YAML
 
-@Suite("Edge Case Tests")
+@Suite("Edge Case Tests", .tags(.regression))
 struct EdgeCaseTests {
 
     // MARK: - Blank lines

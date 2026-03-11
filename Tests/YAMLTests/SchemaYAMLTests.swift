@@ -1,7 +1,7 @@
 import Testing
 @testable import YAML
 
-@Suite("Schema YAML Tests - Real database-framework YAML patterns")
+@Suite("Schema YAML Tests - Real database-framework YAML patterns", .tags(.regression))
 struct SchemaYAMLTests {
 
     @Test("Simple schema with scalar index")

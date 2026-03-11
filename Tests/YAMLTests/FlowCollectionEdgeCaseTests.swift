@@ -1,7 +1,7 @@
 import Testing
 @testable import YAML
 
-@Suite("Flow Collection Edge Cases")
+@Suite("Flow Collection Edge Cases", .tags(.regression, .flow))
 struct FlowCollectionEdgeCaseTests {
 
     @Test("Flow sequence with spaces around delimiters")

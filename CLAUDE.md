@@ -12,15 +12,43 @@ Pure Swift YAML parser with no external dependencies. Parses YAML strings into a
 # Build
 swift build
 
-# Run all tests (with timeout)
-timeout 30 swift test
-
-# Run a specific test suite
-timeout 30 swift test --filter YAMLTests.ComposeTests
-timeout 30 swift test --filter YAMLTests.SchemaYAMLTests
+# Run all tests
+swift test 2>&1 | tail -5
 
 # Run a single test
-timeout 30 swift test --filter YAMLTests.ComposeTests/simpleMapping
+swift test --filter YAMLTests.ComposeTests/simpleMapping
+```
+
+### Filter by category (regex on Suite/test path)
+
+```bash
+# By YAML spec chapter
+swift test --filter "SpecChapter2"     # Chapter 2: Language Overview
+swift test --filter "SpecChapter5"     # Chapter 5: Character Productions
+swift test --filter "SpecChapter6"     # Chapter 6: Structural Productions
+swift test --filter "SpecChapter7"     # Chapter 7: Flow Style Productions
+swift test --filter "SpecChapter8"     # Chapter 8: Block Style Productions
+swift test --filter "SpecChapter9"     # Chapter 9: Document Stream
+swift test --filter "SpecChapter10"    # Chapter 10: Recommended Schemas
+
+# By feature area
+swift test --filter "SpecComplexKey"   # Explicit ? keys, complex keys
+swift test --filter "SpecMultiline"    # Multi-line scalar folding
+swift test --filter "SpecEscape"       # Escape sequences
+swift test --filter "SpecTag"          # Tag parsing
+swift test --filter "SpecDirective"    # %YAML, %TAG directives
+swift test --filter "SpecAnchor"       # Anchors & aliases
+swift test --filter "SpecComment"      # Comment handling
+swift test --filter "SpecEmpty"        # Empty nodes
+swift test --filter "SpecIndentation"  # Indentation rules
+swift test --filter "SpecJSON"         # JSON compatibility
+
+# All spec tests vs regression tests
+swift test --filter "Spec"             # All YAML 1.2.2 spec tests
+swift test --filter "EdgeCase|Error|Compose|Schema|LineEnding"  # Regression tests
+
+# Show only failures
+swift test 2>&1 | grep -E "failed|recorded an issue"
 ```
 
 Swift tools version: 6.2. No platform restrictions specified.

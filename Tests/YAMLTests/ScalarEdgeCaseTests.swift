@@ -1,7 +1,7 @@
 import Testing
 @testable import YAML
 
-@Suite("Scalar Edge Cases")
+@Suite("Scalar Edge Cases", .tags(.regression, .scalar))
 struct ScalarEdgeCaseTests {
 
     // MARK: - Colon in values

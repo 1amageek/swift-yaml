@@ -1,7 +1,7 @@
 import Testing
 @testable import YAML
 
-@Suite("Indentation Edge Cases")
+@Suite("Indentation Edge Cases", .tags(.regression, .indentation))
 struct IndentationEdgeCaseTests {
 
     @Test("Multiple dedents at once (6 -> 0)")

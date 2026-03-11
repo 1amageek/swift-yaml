@@ -3,6 +3,8 @@ struct Parser {
     private var scanner: Scanner
     /// Lookahead buffer (single token).
     private var peeked: Token?
+    /// Anchor registry for alias resolution.
+    private var anchors: [String: Node] = [:]
 
     init(yaml: String) {
         self.scanner = Scanner(source: yaml)
@@ -17,20 +19,35 @@ struct Parser {
             throw YAMLError.parser(message: "expected stream start", mark: scanner.mark)
         }
 
-        // Skip to first meaningful token
+        // Skip document start if present
+        if case .documentStart = try peekToken() {
+            try consumeToken()
+        }
+
         if try isStreamEnd() {
             return nil
         }
+        // Empty document (--- followed by ... or ---)
+        if case .documentEnd = try peekToken() {
+            return nil
+        }
+        if case .documentStart = try peekToken() {
+            return nil
+        }
 
-        let node = try parseNode()
+        let node = try parseNode(pushPropertiesToFirstKey: true)
 
-        // Consume remaining blockEnd and streamEnd
+        // Consume remaining blockEnd, documentEnd, streamEnd
         while true {
             let tok = try peekToken()
             switch tok {
             case .blockEnd:
                 try consumeToken()
+            case .documentEnd:
+                try consumeToken()
             case .streamEnd:
+                return node
+            case .documentStart:
                 return node
             default:
                 return node
@@ -40,53 +57,134 @@ struct Parser {
 
     // MARK: - Node parsing
 
-    private mutating func parseNode() throws -> Node {
+    private mutating func parseNode(pushPropertiesToFirstKey: Bool = false) throws -> Node {
+        var anchorName: String? = nil
+
+        // Consume node properties (tag, anchor) before the actual node
+        propertyLoop: while true {
+            let tok = try peekToken()
+            switch tok {
+            case .tag:
+                try consumeToken() // consume tag, not stored on node
+            case .anchor(let name):
+                try consumeToken()
+                anchorName = name
+            case .alias(let name):
+                try consumeToken()
+                guard let resolved = anchors[name] else {
+                    throw YAMLError.parser(message: "undefined alias '*\(name)'", mark: scanner.mark)
+                }
+                return resolved
+            default:
+                break propertyLoop
+            }
+        }
+
         let tok = try peekToken()
+        let node: Node
 
         switch tok {
         case .blockMappingStart:
-            return try .mapping(parseBlockMapping())
+            if pushPropertiesToFirstKey, anchorName != nil {
+                let savedAnchor = anchorName
+                anchorName = nil
+                node = try .mapping(parseBlockMapping(firstKeyAnchor: savedAnchor))
+            } else {
+                node = try .mapping(parseBlockMapping())
+            }
         case .blockSequenceStart:
-            return try .sequence(parseBlockSequence())
+            node = try .sequence(parseBlockSequence())
         case .flowSequenceStart:
-            return try .sequence(parseFlowSequence())
+            node = try .sequence(parseFlowSequence())
         case .flowMappingStart:
-            return try .mapping(parseFlowMapping())
+            node = try .mapping(parseFlowMapping())
         case .scalar(let value, _):
             try consumeToken()
-            return .scalar(Node.Scalar(value))
+            node = .scalar(Node.Scalar(value))
         case .key:
-            // Implicit mapping at current level
-            return try .mapping(parseBlockMapping())
+            if pushPropertiesToFirstKey, anchorName != nil {
+                let savedAnchor = anchorName
+                anchorName = nil
+                node = try .mapping(parseBlockMapping(firstKeyAnchor: savedAnchor))
+            } else {
+                node = try .mapping(parseBlockMapping())
+            }
         case .blockEntry:
-            // Implicit sequence at current level
-            return try .sequence(parseBlockSequence())
+            node = try .sequence(parseBlockSequence())
+        case .value:
+            // Empty key scenario — value without preceding key
+            node = .scalar(Node.Scalar(""))
+        // After tag/anchor, if next is end-of-context, produce empty scalar
+        case .blockEnd, .streamEnd, .documentEnd, .documentStart,
+             .flowEntry, .flowSequenceEnd, .flowMappingEnd:
+            node = .scalar(Node.Scalar(""))
         default:
             throw YAMLError.parser(message: "unexpected token: \(tok)", mark: scanner.mark)
         }
+
+        if let name = anchorName {
+            anchors[name] = node
+        }
+
+        return node
     }
 
     // MARK: - Block mapping
 
-    private mutating func parseBlockMapping() throws -> Node.Mapping {
-        // Consume blockMappingStart if present
+    private mutating func parseBlockMapping(firstKeyAnchor: String? = nil) throws -> Node.Mapping {
         if case .blockMappingStart = try peekToken() {
             try consumeToken()
         }
 
         var pairs: [(Node, Node)] = []
+        var isFirstKey = true
 
         loop: while true {
+            // Consume entry-level node properties (tag/anchor before key)
+            var entryAnchor: String? = nil
+            entryPropertyLoop: while true {
+                let propTok = try peekToken()
+                switch propTok {
+                case .tag:
+                    try consumeToken()
+                case .anchor(let name):
+                    try consumeToken()
+                    entryAnchor = name
+                default:
+                    break entryPropertyLoop
+                }
+            }
+
             let tok = try peekToken()
 
             switch tok {
             case .key:
                 try consumeToken()
-                let keyNode = try parseNode()
+
+                // Parse key — might be empty if next is .value
+                let keyNode: Node
+                let afterKey = try peekToken()
+                switch afterKey {
+                case .value:
+                    keyNode = .scalar(Node.Scalar(""))
+                case .key, .blockEnd, .streamEnd, .documentEnd, .documentStart:
+                    keyNode = .scalar(Node.Scalar(""))
+                default:
+                    keyNode = try parseNode()
+                }
+
+                // Attach anchor from parent properties to first key
+                if isFirstKey, let anchor = firstKeyAnchor {
+                    anchors[anchor] = keyNode
+                }
+                // Attach entry-level anchor to key
+                if let anchor = entryAnchor {
+                    anchors[anchor] = keyNode
+                }
+                isFirstKey = false
 
                 // Expect value indicator
-                let valueTok = try peekToken()
-                if case .value = valueTok {
+                if case .value = try peekToken() {
                     try consumeToken()
                 }
 
@@ -94,7 +192,7 @@ struct Parser {
                 let valueNode: Node
                 let nextTok = try peekToken()
                 switch nextTok {
-                case .key, .blockEnd, .streamEnd:
+                case .key, .blockEnd, .streamEnd, .documentEnd, .documentStart:
                     valueNode = .scalar(Node.Scalar(""))
                 default:
                     valueNode = try parseNode()
@@ -102,11 +200,24 @@ struct Parser {
 
                 pairs.append((keyNode, valueNode))
 
+            case .value:
+                // Value without preceding key → implicit empty key
+                try consumeToken()
+                let valueNode: Node
+                let nextTok = try peekToken()
+                switch nextTok {
+                case .key, .value, .blockEnd, .streamEnd, .documentEnd, .documentStart:
+                    valueNode = .scalar(Node.Scalar(""))
+                default:
+                    valueNode = try parseNode()
+                }
+                pairs.append((.scalar(Node.Scalar("")), valueNode))
+
             case .blockEnd:
                 try consumeToken()
                 break loop
 
-            case .streamEnd:
+            case .streamEnd, .documentEnd, .documentStart:
                 break loop
 
             default:
@@ -120,7 +231,6 @@ struct Parser {
     // MARK: - Block sequence
 
     private mutating func parseBlockSequence() throws -> Node.Sequence {
-        // Consume blockSequenceStart if present
         if case .blockSequenceStart = try peekToken() {
             try consumeToken()
         }
@@ -135,7 +245,10 @@ struct Parser {
                 try consumeToken()
                 let nextTok = try peekToken()
                 switch nextTok {
-                case .blockEnd, .streamEnd:
+                case .blockEntry:
+                    // Empty entry before next entry
+                    nodes.append(.scalar(Node.Scalar("")))
+                case .blockEnd, .streamEnd, .documentEnd, .documentStart:
                     nodes.append(.scalar(Node.Scalar("")))
                 default:
                     nodes.append(try parseNode())
@@ -145,7 +258,7 @@ struct Parser {
                 try consumeToken()
                 break loop
 
-            case .streamEnd:
+            case .streamEnd, .documentEnd, .documentStart:
                 break loop
 
             default:
@@ -207,13 +320,46 @@ struct Parser {
     private mutating func parseFlowMappingEntry() throws -> (Node, Node) {
         let tok = try peekToken()
 
+        // Empty key: `: value` pattern in flow mapping
+        if case .value = tok {
+            try consumeToken()
+            let valueNode: Node
+            let afterVal = try peekToken()
+            switch afterVal {
+            case .flowMappingEnd, .flowEntry, .flowSequenceEnd:
+                valueNode = .scalar(Node.Scalar(""))
+            default:
+                valueNode = try parseFlowNode()
+            }
+            return (.scalar(Node.Scalar("")), valueNode)
+        }
+
         if case .key = tok {
             try consumeToken()
-            let keyNode = try parseFlowNode()
+
+            let keyNode: Node
+            let afterKey = try peekToken()
+            switch afterKey {
+            case .value:
+                keyNode = .scalar(Node.Scalar(""))
+            case .flowMappingEnd, .flowEntry:
+                keyNode = .scalar(Node.Scalar(""))
+            default:
+                keyNode = try parseFlowNode()
+            }
+
             if case .value = try peekToken() {
                 try consumeToken()
             }
-            let valueNode = try parseFlowNode()
+
+            let valueNode: Node
+            let afterVal = try peekToken()
+            switch afterVal {
+            case .flowMappingEnd, .flowEntry, .flowSequenceEnd:
+                valueNode = .scalar(Node.Scalar(""))
+            default:
+                valueNode = try parseFlowNode()
+            }
             return (keyNode, valueNode)
         }
 
@@ -221,7 +367,14 @@ struct Parser {
         let keyNode = try parseFlowNode()
         if case .value = try peekToken() {
             try consumeToken()
-            let valueNode = try parseFlowNode()
+            let afterVal = try peekToken()
+            let valueNode: Node
+            switch afterVal {
+            case .flowMappingEnd, .flowEntry, .flowSequenceEnd:
+                valueNode = .scalar(Node.Scalar(""))
+            default:
+                valueNode = try parseFlowNode()
+            }
             return (keyNode, valueNode)
         }
         return (keyNode, .scalar(Node.Scalar("")))
@@ -230,18 +383,104 @@ struct Parser {
     // MARK: - Flow node
 
     private mutating func parseFlowNode() throws -> Node {
+        var anchorName: String? = nil
+        var hasProperties = false
+
+        // Consume node properties
+        propertyLoop: while true {
+            let tok = try peekToken()
+            switch tok {
+            case .tag:
+                try consumeToken()
+                hasProperties = true
+            case .anchor(let name):
+                try consumeToken()
+                anchorName = name
+                hasProperties = true
+            case .alias(let name):
+                try consumeToken()
+                guard let resolved = anchors[name] else {
+                    throw YAMLError.parser(message: "undefined alias '*\(name)'", mark: scanner.mark)
+                }
+                return resolved
+            default:
+                break propertyLoop
+            }
+        }
+
         let tok = try peekToken()
+        let node: Node
+
         switch tok {
         case .flowSequenceStart:
-            return try .sequence(parseFlowSequence())
+            node = try .sequence(parseFlowSequence())
         case .flowMappingStart:
-            return try .mapping(parseFlowMapping())
+            node = try .mapping(parseFlowMapping())
         case .scalar(let value, _):
             try consumeToken()
-            return .scalar(Node.Scalar(value))
+            node = .scalar(Node.Scalar(value))
+        case .key:
+            // Implicit mapping inside flow sequence (single-pair)
+            node = try .mapping(parseFlowImplicitMapping())
+        case .value:
+            if hasProperties {
+                // Tag/anchor on empty node followed by value indicator
+                // Return empty scalar; caller handles the value
+                node = .scalar(Node.Scalar(""))
+            } else {
+                // Implicit mapping with empty key: `: value` in flow context
+                try consumeToken()
+                let val: Node
+                let nextAfterValue = try peekToken()
+                switch nextAfterValue {
+                case .flowEntry, .flowSequenceEnd, .flowMappingEnd:
+                    val = .scalar(Node.Scalar(""))
+                default:
+                    val = try parseFlowNode()
+                }
+                node = .mapping(Node.Mapping([(.scalar(Node.Scalar("")), val)]))
+            }
+        case .flowEntry, .flowSequenceEnd, .flowMappingEnd:
+            node = .scalar(Node.Scalar(""))
         default:
             throw YAMLError.parser(message: "unexpected token in flow: \(tok)", mark: scanner.mark)
         }
+
+        if let name = anchorName {
+            anchors[name] = node
+        }
+
+        return node
+    }
+
+    /// Parse an implicit single-pair mapping inside a flow sequence.
+    private mutating func parseFlowImplicitMapping() throws -> Node.Mapping {
+        // key token already peeked
+        try consumeToken() // consume .key
+
+        let keyNode: Node
+        let afterKey = try peekToken()
+        switch afterKey {
+        case .value:
+            keyNode = .scalar(Node.Scalar(""))
+        default:
+            keyNode = try parseFlowNode()
+        }
+
+        if case .value = try peekToken() {
+            try consumeToken()
+        }
+
+        let valueNode: Node
+        let afterVal = try peekToken()
+        switch afterVal {
+        case .flowEntry, .flowSequenceEnd, .flowMappingEnd:
+            valueNode = .scalar(Node.Scalar(""))
+        default:
+            valueNode = try parseFlowNode()
+        }
+
+        return Node.Mapping([(keyNode, valueNode)])
     }
 
     // MARK: - Token helpers
@@ -268,7 +507,6 @@ struct Parser {
 
     private mutating func consumeExpected(_ expected: Token) throws {
         let tok = try nextToken()
-        // Compare by case (ignoring associated values where appropriate)
         switch (expected, tok) {
         case (.flowSequenceStart, .flowSequenceStart),
              (.flowSequenceEnd, .flowSequenceEnd),

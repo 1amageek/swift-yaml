@@ -1,7 +1,7 @@
 import Testing
 @testable import YAML
 
-@Suite("Line Ending Tests")
+@Suite("Line Ending Tests", .tags(.regression, .scalar))
 struct LineEndingTests {
 
     @Test("Windows line endings (CRLF)")

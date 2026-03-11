@@ -13,7 +13,7 @@ enum Token: Sendable {
     case blockSequenceStart
     case blockEnd
     case blockEntry            // -
-    case key                   // implicit key
+    case key                   // implicit/explicit key
     case value                 // :
     case flowSequenceStart     // [
     case flowSequenceEnd       // ]
@@ -21,4 +21,9 @@ enum Token: Sendable {
     case flowMappingEnd        // }
     case flowEntry             // ,
     case scalar(String, ScalarStyle)
+    case documentStart         // ---
+    case documentEnd           // ...
+    case anchor(String)        // &name
+    case alias(String)         // *name
+    case tag(String)           // !tag, !!type, etc.
 }
