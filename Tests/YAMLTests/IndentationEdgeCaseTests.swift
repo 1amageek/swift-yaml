@@ -134,6 +134,104 @@ struct IndentationEdgeCaseTests {
         #expect(colors.count == 2)
     }
 
+    @Test("Keys after nested mapping containing block sequence")
+    func keysAfterNestedBlockMappingWithSequence() throws {
+        let yaml = """
+        - id: app
+          connections:
+            mcp_servers:
+            - service_ref: mcp-node/calc
+          mount_path: /agents/py
+          watch_mode: internal
+        """
+        let node = try compose(yaml: yaml)
+        guard case .sequence(let seq) = node else {
+            Issue.record("Expected sequence"); return
+        }
+        guard case .mapping(let m) = seq[0] else {
+            Issue.record("Expected mapping"); return
+        }
+
+        #expect(m["mount_path"] != nil, "mount_path should be a sibling of connections")
+        #expect(m["watch_mode"] != nil, "watch_mode should be a sibling of connections")
+        #expect(m.count == 4, "Should have id, connections, mount_path, watch_mode")
+    }
+
+    @Test("Workspace YAML pattern: service with connections and trailing keys")
+    func workspaceYAMLPattern() throws {
+        let yaml = """
+        repos:
+        - name: agent
+          services:
+          - id: app
+            kind: agent
+            port: 0
+            run:
+            - python3
+            - server.py
+            connections:
+              mcp_servers:
+              - service_ref: mcp-node/calc
+            mount_path: /agents/py
+            watch_mode: internal
+        """
+        let node = try compose(yaml: yaml)
+        guard case .mapping(let root) = node,
+              case .sequence(let repos) = root["repos"],
+              case .mapping(let repo) = repos[0],
+              case .sequence(let services) = repo["services"],
+              case .mapping(let svc) = services[0] else {
+            Issue.record("Expected workspace structure"); return
+        }
+
+        #expect(svc["id"] != nil)
+        #expect(svc["kind"] != nil)
+        #expect(svc["mount_path"] != nil, "mount_path should be at service level")
+        #expect(svc["watch_mode"] != nil, "watch_mode should be at service level")
+        #expect(svc["connections"] != nil)
+
+        guard case .mapping(let conn) = svc["connections"] else {
+            Issue.record("Expected connections mapping"); return
+        }
+        #expect(conn.count == 1, "connections should only have mcp_servers")
+    }
+
+    @Test("Sequence at same indent as mapping key without trailing keys")
+    func sequenceAtSameIndentNoTrailing() throws {
+        let yaml = """
+        data:
+          items:
+          - a
+          - b
+        """
+        let node = try compose(yaml: yaml)
+        guard case .mapping(let root) = node,
+              case .mapping(let data) = root["data"],
+              case .sequence(let items) = data["items"] else {
+            Issue.record("Expected nested structure"); return
+        }
+        #expect(items.count == 2)
+    }
+
+    @Test("Sequence at same indent followed by sibling key")
+    func sequenceAtSameIndentWithSibling() throws {
+        let yaml = """
+        data:
+          items:
+          - a
+          - b
+          count: 2
+        """
+        let node = try compose(yaml: yaml)
+        guard case .mapping(let root) = node,
+              case .mapping(let data) = root["data"] else {
+            Issue.record("Expected nested structure"); return
+        }
+        #expect(data.count == 2)
+        #expect(data["items"] != nil)
+        #expect(data["count"] != nil)
+    }
+
     @Test("Deeply nested sequence of mappings")
     func deepSequenceOfMappings() throws {
         let yaml = """

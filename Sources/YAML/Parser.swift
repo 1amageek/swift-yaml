@@ -298,8 +298,15 @@ struct Parser {
         try incrementDepth()
         defer { decrementDepth() }
 
+        // Track whether this sequence had an explicit blockSequenceStart.
+        // When a block sequence `-` appears at the same indent as the parent
+        // mapping key, the scanner does not push a new indent or emit
+        // blockSequenceStart. In that case the sequence must NOT consume the
+        // blockEnd token — it belongs to the parent mapping.
+        var hasExplicitStart = false
         if case .blockSequenceStart = try peekToken() {
             try consumeToken()
+            hasExplicitStart = true
         }
 
         var nodes: [Node] = []
@@ -322,7 +329,9 @@ struct Parser {
                 }
 
             case .blockEnd:
-                try consumeToken()
+                if hasExplicitStart {
+                    try consumeToken()
+                }
                 break loop
 
             case .streamEnd, .documentEnd, .documentStart:
