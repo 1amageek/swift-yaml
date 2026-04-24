@@ -44,4 +44,6 @@ extension Tag {
     @Tag static var empty: Self
     /// Error edge cases: scanner and parser error paths
     @Tag static var edgeCases: Self
+    /// End-to-end tests: real-world YAML documents (CI configs, manifests, etc.)
+    @Tag static var e2e: Self
 }
